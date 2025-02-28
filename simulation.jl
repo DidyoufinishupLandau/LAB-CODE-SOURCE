@@ -1,25 +1,25 @@
 using QuantumToolbox
-using CUDA
-using CUDA.CUSPARSE
 using PyPlot
 using LinearAlgebra
-CUDA.allowscalar(false)
 
-wr = 4 * 2pi
+wr = 3.8 * 2pi
 t = 1.1 *  2pi
 delta = sqrt(wr ^ 2 - 4 * t ^ 2)
-kappa = 0.04 *  2pi
-kin = 0.038 *  2pi
-K = 0.00 *  2pi
-g0 = 0.1 *  2pi
+kappa = 0.029 *  2pi
+kin = (0.023) *  2pi #to feedline
+K = 2 *  2pi
+g0 = 0.10 *  2pi
 gamma_r = 0.03 *  2pi
 gamma_phi = 0.06 *  2pi
-gamma = 1.5
-e, N = 1.602e-19, 100
+gamma = 2.5
+dephasing = 0.004 * 2* 2pi
+e, N = 1.602e-19, 300
+
+
 
 g = g0 * 2 * t / wr
 
-P_values = range(0, 45, 20) #fw # From 1 to 10 in 5 steps
+P_values = [range(0.001, 0.01, 5);range(0.01, 0.1, 5); range(0.1, 1, 5); range(1, 100, 20)] #fw # From 1 to 10 in 5 steps
 #P_values_large = np.linspace(1,50,20)
 #P_values = np.hstack((P_values, P_values_large))
 # System setup (constant for all simulations)
@@ -52,7 +52,7 @@ function system_hamiltonian(w, n_dot)
     #print(tensor(a.dag(), rho_down))
     h0 = Delta_c * tensor(dag(a) * a, qeye(3))
     h1 = Delta_q * tensor(qeye(N), rho_z) / 2
-    kerr_h = K * tensor(dag(a) * a * dag(a) * a, qeye(3))
+    kerr_h = K/2 * tensor(dag(a) * dag(a) * a * a, qeye(3))
     coupling_h = g * (tensor(a, rho_up) + tensor(dag(a), rho_down))
     drive_h = f * (tensor(a, qeye(3)) + tensor(dag(a), qeye(3)))
 
@@ -60,29 +60,15 @@ function system_hamiltonian(w, n_dot)
 
 end
 
-rho_up = extentions(rho_up) # rho +
-rho_down = extentions(rho_down) # rho -
-rho_z = extentions(rho_z)
-rho_0e = basis(3, 2) * dag(basis(3, 0))
-rho_g0 = basis(3, 1) * dag(basis(3, 2))
-
-rho_up_gpu = cu(rho_up)
-rho_down_gpu = cu(rho_down)
-rho_z_gpu = cu(rho_z)
-rho_0e_gpu = cu(rho_0e)
-rho_g0_gpu = cu(rho_g0)
-
-psi0 = tensor(fock(N, 0), fock(3, 2))
-psi0_gpu = cu(psi0)
 
 observables = [
     tensor(qeye(N), basis(3, 0) * dag(basis(3, 0))),
-    tensor(qeye(N), basis(3, 2) * dag(basis(3, 2)))
+    tensor(qeye(N), basis(3, 2) * dag(basis(3, 2))),
+    tensor(dag(a) * a, qeye(3))
+
 ]
-observables_GPU = [
-    cu(tensor(qeye(N), basis(3, 0) * dag(basis(3, 0)))),
-    cu(tensor(qeye(N), basis(3, 2) * dag(basis(3, 2))))
-]
+println(basis(3, 0) * dag(basis(3, 0)))
+
 #print(rho_up)
 # Collapse operators (constant for all simulations)
 c_ops = [
@@ -90,21 +76,16 @@ c_ops = [
     sqrt(2 * gamma) * tensor(qeye(N), rho_g0),
     sqrt(gamma_r) * tensor(qeye(N), rho_down),
     sqrt(gamma_phi) * tensor(qeye(N), rho_z),
-    sqrt(kappa) * tensor(a, qeye(3))
+    sqrt(kappa) * tensor(a, qeye(3)),
+    sqrt(dephasing) * tensor(dag(a)*a, qeye(3))
 ]
 
-c_ops_gpu = [
-    sqrt(gamma) * cu(tensor(qeye(N), rho_0e)),
-    sqrt(2 * gamma) * cu(tensor(qeye(N), rho_g0)),
-    sqrt(gamma_r) * cu(tensor(qeye(N), rho_down)),
-    sqrt(gamma_phi) * cu(tensor(qeye(N), rho_z)),
-    sqrt(kappa) * cu(tensor(a, qeye(3)))
-]
-
+#construct the projection operator for the usage of the
 currents = []
 efficiencies = []
 cavity_photon_number = []
 saturation_current = []
+number_of_photon_fit = []
 
 
 for P in P_values
@@ -112,11 +93,13 @@ for P in P_values
     n_dot = P * 1e-15 / (1.055e-34 * wr * 1e18)
     push!(cavity_photon_number, n_dot)
     H = system_hamiltonian(wr, n_dot)  # Rebuild Hamiltonian with new P
-    # Run simulation
-    output = steadystate(H, c_ops)
-
+    #Run simulation
+    output = steadystate(H, c_ops; solver = SteadyStateLinearSolver())
+    #output = steadystate(H, c_ops)
     expect_e = expect(output, observables[1])
     expect_0 = expect(output,observables[2])
+    expect_photon = expect(output, observables[3])
+
     gamma_l_in = gamma * (wr + delta) / (wr)
     gamma_r_in = gamma * (wr - delta) / (wr)
     gamma_r_out = gamma_l_in/2
@@ -124,13 +107,11 @@ for P in P_values
 
     current = e * (expect_e * gamma_r_out -
                    expect_0 * gamma_r_in)*10^9
-    #time_averaged_currents = np.trapezoid(current, tlist)/(tlist[-1]-tlist[0])
-    #currents.append(time_averaged_currents)  # Average steady-state current
-    push!(currents, current) #steady state current, roughtly after 15 ps
 
+    push!(currents, current) #steady state current, roughtly after 30 ps
+    push!(number_of_photon_fit, expect_photon)
     push!(efficiencies, current/(1.602*10^-19*n_dot*10^9))
     pf = gamma_l_in*gamma_r_out/(2*gamma^2)-gamma_r_in*gamma_l_out/(2*gamma^2)
-
     N_saturation = 1.602 * 10 ^ -19 * 2 / 5 * gamma * pf * 10^9
     push!(saturation_current, N_saturation)
 end
@@ -139,8 +120,8 @@ figure(figsize=(12, 6))
 
 # Subplot 1: Current vs Cavity Photon Number
 subplot(1, 2, 1)
-plot(cavity_photon_number, currents, "o-", color="blue")
-xlabel("Cavity Photon Number", fontsize=12)
+plot(P_values, currents, "o-", color="blue")
+xlabel("Power (fW", fontsize=12)
 ylabel("Current (nA)", fontsize=12)
 title("Steady-State Current")
 grid(true, linestyle="--", alpha=0.7)
@@ -153,7 +134,15 @@ ylabel("Efficiency", fontsize=12)
 title("Conversion Efficiency")
 grid(true, which="both", linestyle="--", alpha=0.7)
 
+figure()
+plot(P_values, number_of_photon_fit, "o-", label="number of photon in cavity")
+xlabel("Power (fW)", fontsize=12)
+ylabel("photon number (nA)", fontsize=12)
+title("Current vs Power")
+legend()
+grid(true)
 # Add some spacing between subplots
+
 tight_layout(pad=3.0)
 
 # Optional: Plot saturation current comparison
